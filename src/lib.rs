@@ -1,56 +1,63 @@
 use stackpin::PinStack;
 
-pub trait Transfer: Sized {
-    unsafe fn transfer(src: &PinStack<'_, Self>, dst: *mut Self) {
-        use std::ptr;
-        let src = ptr::read(src.as_ref().get_ref());
-        ptr::write(dst, src);
-    }
+///
+/// # Safety
+///
+/// * Implementers **must** write a valid `Self` to the `dst` argument of `transfer`
+/// * Implementers are **not** allowed to panic in the `transfer` function
+/// * Implementers **must** reset `pin` to a value that can be safely dropped without incidence on
+///   the `dst` pointer that was written to in the `transfer` function
+pub unsafe trait Transfer {
+    /// # Safety
+    ///
+    /// * Callers of this function **must** call `reset` on the `src` argument right afterwards.
+    /// * `dst` must point to a `Self` instance, that can possibly be uninitialized
+    /// * `src` and `dest` **must** point to different instances.
+    unsafe fn transfer(src: &mut PinStack<'_, Self>, dst: *mut Self)
+    where
+        Self: Sized;
 
-    unsafe fn set_empty(pin: &mut PinStack<'_, Self>);
-
-    fn empty() -> Self;
+    fn empty() -> Tr<Self>;
 }
 
-/// Slot<T> is "just a T you can't use". It is guaranteed to have the same layout than T, but none of the T members
-/// are available. Slot is used internally by the `transfer` machinery to write an actual T in its place.
-/// Since the Slot<T> contains a T, it **will** call T's destructor on drop. 
-#[repr(transparent)]
-pub struct Slot<T>(T);
+pub struct Tr<T: ?Sized>(T);
 
-impl<T: Transfer> Slot<T> {
-    pub fn empty() -> Self {
-        Self(T::empty())
+impl<T: Transfer> Tr<T> {
+    pub fn from_empty(empty: T) -> Self {
+        Self(empty)
     }
 
-    fn as_ptr(&mut self) -> *mut T {
+    fn slot(&mut self) -> *mut T {
         &mut self.0 as *mut T
     }
 }
 
-pub fn transfer<'old, 'new, T: Transfer>(
+pub fn transfer<'old, 'new, T>(
     mut src: PinStack<'old, T>,
-    dest: &'new mut Slot<T>,
-) -> PinStack<'new, T> {
+    dest: &'new mut Tr<T>,
+) -> PinStack<'new, T>
+where
+    T: Transfer,
+{
     use stackpin::StackPinned;
     use std::pin::Pin;
     unsafe {
-        <T as Transfer>::transfer(&src, dest.as_ptr());
-        <T as Transfer>::set_empty(&mut src);
-        Pin::new_unchecked(StackPinned::new(&mut dest.0))
+        let slot = dest.slot();
+        T::transfer(&mut src, slot);
+        Pin::new_unchecked(StackPinned::new(&mut *slot))
     }
 }
 
 #[macro_export]
 macro_rules! transfer_let {
     ($id:ident = $fun_name:ident ($($arg:expr),*)) => {
-        let mut $id = $crate::Slot::empty();
+        let mut $id = $crate::Transfer::empty();
         let $id = $fun_name($($arg),* &mut $id);
     };
-    /*($id:ident = $e:expr) => {
-        let $id = $crate::Slot::empty();
-        $crate::transfer($e, &mut $id);
-    };*/
+    ($id:ident = $e:expr) => {
+        let mut $id = $crate::Transfer::empty();
+        let $id = $crate::transfer($e, &mut $id);
+    };
 }
 
 #[cfg(test)]
@@ -64,12 +71,11 @@ mod tests {
             *x = 0;
         }
 
-        use super::super::Empty;
-        use super::super::Transfer;
+        use super::super::{Tr, Transfer};
         use stackpin::FromUnpinned;
         use stackpin::PinStack;
 
-        impl<'a> FromUnpinned<&'a mut u64> for SecretU64 {
+        unsafe impl<'a> FromUnpinned<&'a mut u64> for SecretU64 {
             type PinData = &'a mut u64;
 
             unsafe fn from_unpinned(src: &'a mut u64) -> (Self, &'a mut u64) {
@@ -86,17 +92,18 @@ mod tests {
             }
         }
 
-        impl Transfer for SecretU64 {
-            unsafe fn set_empty(pin: &mut PinStack<'_, Self>) {
+        unsafe impl Transfer for SecretU64 {
+            unsafe fn transfer(src: &mut PinStack<'_, Self>, dst: *mut Self) {
+                (*dst).0 = src.0;
+                secure_erase(&mut src.as_mut().get_unchecked_mut().0);
                 println!(
                     "Secure erasing on transfer for {:p}",
-                    &mut pin.as_mut().get_unchecked_mut().0
+                    &mut src.as_mut().get_unchecked_mut().0
                 );
-                secure_erase(&mut pin.as_mut().get_unchecked_mut().0)
             }
 
-            fn empty() -> Self {
-                Self(0, PhantomPinned)
+            fn empty() -> Tr<Self> {
+                Tr::from_empty(Self(0, PhantomPinned))
             }
         }
 
@@ -117,20 +124,32 @@ mod tests {
             }
         }
 
-        pub fn generate_secret(slot: &mut crate::Slot<SecretU64>) -> PinStack<'_, SecretU64> {
+        pub fn generate_secret(slot: &mut crate::Tr<SecretU64>) -> PinStack<'_, SecretU64> {
             let mut secret = 42;
             stackpin::stack_let!(secret = stackpin::Unpinned::new(&mut secret));
             crate::transfer(secret, slot)
         }
     }
 
+    use secret::SecretU64;
+
     #[test]
-    fn it_works() {
+    fn outin_transfer() {
         use secret::generate_secret;
         super::transfer_let!(my_secret = generate_secret());
-        println!(
-            "Revealing value of my secret: {}",
-            secret::SecretU64::reveal(&my_secret)
-        );
+        assert_eq!(SecretU64::reveal(&my_secret), 42);
+    }
+
+    fn transfer_secret(outer_secret: stackpin::PinStack<'_, secret::SecretU64>) {
+        super::transfer_let!(inner_secret = outer_secret);
+        assert_eq!(SecretU64::reveal(&inner_secret), 83);
+    }
+
+    #[test]
+    fn inout_transfer() {
+        let mut initial_secret = 83u64;
+        stackpin::stack_let!(my_secret: SecretU64 = &mut initial_secret);
+        transfer_secret(my_secret);
+        assert_eq!(initial_secret, 0);
     }
 }
