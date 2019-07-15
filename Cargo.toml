@@ -5,4 +5,4 @@ authors = ["Louis Dureuil <louis.dureuil@xinra.net>"]
 edition = "2018"
 
 [dependencies]
-stackpinned = {path = "../stackpinned"}
+stackpin = "0.0.2"

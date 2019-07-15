@@ -1,4 +1,4 @@
-use stackpinned::PinStack;
+use stackpin::PinStack;
 
 pub trait Transfer: Sized {
     unsafe fn transfer(src: &PinStack<'_, Self>, dst: *mut Self) {
@@ -32,7 +32,7 @@ pub fn transfer<'old, 'new, T: Transfer>(
     mut src: PinStack<'old, T>,
     dest: &'new mut Slot<T>,
 ) -> PinStack<'new, T> {
-    use stackpinned::StackPinned;
+    use stackpin::StackPinned;
     use std::pin::Pin;
     unsafe {
         <T as Transfer>::transfer(&src, dest.as_ptr());
@@ -64,9 +64,10 @@ mod tests {
             *x = 0;
         }
 
+        use super::super::Empty;
         use super::super::Transfer;
-        use stackpinned::FromUnpinned;
-        use stackpinned::PinStack;
+        use stackpin::FromUnpinned;
+        use stackpin::PinStack;
 
         impl<'a> FromUnpinned<&'a mut u64> for SecretU64 {
             type PinData = &'a mut u64;
@@ -118,7 +119,7 @@ mod tests {
 
         pub fn generate_secret(slot: &mut crate::Slot<SecretU64>) -> PinStack<'_, SecretU64> {
             let mut secret = 42;
-            stackpinned::stack_let!(secret = stackpinned::Unpinned::new(&mut secret));
+            stackpin::stack_let!(secret = stackpin::Unpinned::new(&mut secret));
             crate::transfer(secret, slot)
         }
     }
