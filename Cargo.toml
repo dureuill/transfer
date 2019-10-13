@@ -2,6 +2,14 @@
 name = "transfer"
 version = "0.1.0"
 authors = ["Louis Dureuil <louis.dureuil@xinra.net>"]
+license = "MIT OR Apache-2.0"
+description = "Crate that exposes a Transfer trait, that is to move what Clone is to copy"
+repository = "https://github.com/dureuill/transfer"
+documentation = "https://docs.rs/transfer"
+readme = "README.md"
+maintenance = "experimental"
+keyword = ["pin", "ownership", "self", "reference"]
+categories = ["rust-patterns"]
 edition = "2018"
 
 [dependencies]
